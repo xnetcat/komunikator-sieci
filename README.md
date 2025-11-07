@@ -4,9 +4,9 @@ Run locally (one machine)
 
 1. Build images and start discovery:
    - docker compose up --build -d discovery
-2. Start two peers in separate terminals:
-   - docker compose run --rm -it peer-1
-   - docker compose run --rm -it peer-2
+2. Start two peers in separate terminals (publish ports with TTY):
+   - docker compose run --rm -it --service-ports peer-1
+   - docker compose run --rm -it --service-ports peer-2
 3. Type messages; they sync across peers.
 
 Wireshark sniffing (macOS)

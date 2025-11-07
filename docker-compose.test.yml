@@ -26,6 +26,8 @@ services:
       - RUN_DURATION_SECS=15
     ports:
       - "7101:7101"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - discovery
 
@@ -47,6 +49,8 @@ services:
       - RUN_DURATION_SECS=15
     ports:
       - "7102:7102"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - discovery
 
@@ -67,5 +71,7 @@ services:
       - RUN_DURATION_SECS=15
     ports:
       - "7103:7103"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - discovery
