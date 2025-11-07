@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "discovery",
+    "node",
+]
+resolver = "2"
+
+

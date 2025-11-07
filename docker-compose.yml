@@ -1,0 +1,49 @@
+services:
+  discovery:
+    build:
+      context: .
+      dockerfile: discovery/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+
+  peer-1:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    stdin_open: true
+    tty: true
+    environment:
+      - NODE_NAME=peer-1
+      - ROOM=default
+      - LISTEN_PORT=7001
+      - DISCOVERY_URL=http://discovery:8080
+      - ANNOUNCE_ADDR=host.docker.internal:7001
+      - MAX_PEERS=8
+      - RUST_LOG=info
+    ports:
+      - "7001:7001"
+    depends_on:
+      - discovery
+
+  peer-2:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    stdin_open: true
+    tty: true
+    environment:
+      - NODE_NAME=peer-2
+      - ROOM=default
+      - LISTEN_PORT=7002
+      - DISCOVERY_URL=http://discovery:8080
+      - ANNOUNCE_ADDR=host.docker.internal:7002
+      - MAX_PEERS=8
+      - RUST_LOG=info
+    ports:
+      - "7002:7002"
+    depends_on:
+      - discovery
+
+

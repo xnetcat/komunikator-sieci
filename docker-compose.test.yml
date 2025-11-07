@@ -1,0 +1,71 @@
+services:
+  discovery:
+    build:
+      context: .
+      dockerfile: discovery/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+
+  peer-a:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    environment:
+      - NODE_NAME=alice
+      - ROOM=default
+      - LISTEN_PORT=7101
+      - DISCOVERY_URL=http://discovery:8080
+      - ANNOUNCE_ADDR=host.docker.internal:7101
+      - MAX_PEERS=8
+      - RUST_LOG=info
+      - HEADLESS=1
+      - AUTO_SEND=hello from alice
+      - EXPECT_SUBSTRINGS=hi from bob
+      - RUN_DURATION_SECS=15
+    ports:
+      - "7101:7101"
+    depends_on:
+      - discovery
+
+  peer-b:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    environment:
+      - NODE_NAME=bob
+      - ROOM=default
+      - LISTEN_PORT=7102
+      - DISCOVERY_URL=http://discovery:8080
+      - ANNOUNCE_ADDR=host.docker.internal:7102
+      - MAX_PEERS=8
+      - RUST_LOG=info
+      - HEADLESS=1
+      - AUTO_SEND=hi from bob
+      - EXPECT_SUBSTRINGS=hello from alice
+      - RUN_DURATION_SECS=15
+    ports:
+      - "7102:7102"
+    depends_on:
+      - discovery
+
+  peer-c:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    environment:
+      - NODE_NAME=charlie
+      - ROOM=default
+      - LISTEN_PORT=7103
+      - DISCOVERY_URL=http://discovery:8080
+      - ANNOUNCE_ADDR=host.docker.internal:7103
+      - MAX_PEERS=8
+      - RUST_LOG=info
+      - HEADLESS=1
+      - EXPECT_SUBSTRINGS=hello from alice,hi from bob
+      - RUN_DURATION_SECS=15
+    ports:
+      - "7103:7103"
+    depends_on:
+      - discovery

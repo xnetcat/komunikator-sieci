@@ -1,0 +1,23 @@
+[package]
+name = "node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+ratatui = { version = "0.26", default-features = false, features = ["crossterm"] }
+crossterm = "0.27"
+parking_lot = "0.12"
+thiserror = "1.0"
+bytes = "1.6"
+anyhow = "1.0"
+urlencoding = "2.1"
+chrono = { version = "0.4", features = ["serde"] }
+
+
