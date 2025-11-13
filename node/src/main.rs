@@ -40,9 +40,10 @@ async fn main() {
         tui::run_tui(net_to_ui_rx, ui_to_net_tx);
     });
 
-    // Wait for network tasks to finish (UI thread exits on /quit)
-    let _ = tokio::join!(net_handle, disc_handle);
+    // Wait for UI to exit (e.g., /quit), then abort background tasks cleanly
     let _ = ui_handle.join();
+    net_handle.abort();
+    disc_handle.abort();
 }
 
 fn init_tracing() {

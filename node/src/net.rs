@@ -16,6 +16,9 @@ use uuid::Uuid;
 pub enum UiEvent {
     SendText(String),
     ChangeNick(String),
+    Connect(String),
+    Emote(String),
+    QueryName,
     Quit,
 }
 
@@ -62,27 +65,7 @@ pub async fn run_network(
     loop {
         tokio::select! {
             Some(addr) = connect_rx.recv() => {
-                // avoid connecting to self and duplicates
-                if addr == cfg.announce_addr { continue; }
-                let mut set = connected_addrs.lock();
-                if set.contains(&addr) { continue; }
-                set.insert(addr.clone());
-                let out_tx_c = out_tx.clone();
-                let inbound_tx_c = inbound_tx.clone();
-                let connected_addrs_c = connected_addrs.clone();
-                tokio::spawn(async move {
-                    match TcpStream::connect(&addr).await {
-                        Ok(stream) => {
-                            info!("connected to {addr}");
-                            handle_connection(stream, out_tx_c, inbound_tx_c).await;
-                        }
-                        Err(e) => {
-                            warn!("failed to connect to {addr}: {e}");
-                        }
-                    }
-                    // on exit remove from set
-                    connected_addrs_c.lock().remove(&addr);
-                });
+                spawn_connect_if_needed(&cfg, &connected_addrs, &out_tx, &inbound_tx, addr).await;
             }
             Some((line, _src)) = inbound_rx.recv() => {
                 if let Some(msg) = ChatMessage::try_parse(&line) {
@@ -109,6 +92,18 @@ pub async fn run_network(
                     UiEvent::ChangeNick(nick) => {
                         cfg.node_name = nick;
                     }
+                    UiEvent::Connect(addr) => {
+                        spawn_connect_if_needed(&cfg, &connected_addrs, &out_tx, &inbound_tx, addr).await;
+                    }
+                    UiEvent::Emote(text) => {
+                        let msg = ChatMessage::new(cfg.node_name.clone(), cfg.room.clone(), format!("* {}", text));
+                        let line = msg.to_line();
+                        let _ = ui_tx.send(NetEvent::Chat(msg));
+                        let _ = out_tx.send(line);
+                    }
+                    UiEvent::QueryName => {
+                        let _ = ui_tx.send(NetEvent::System(format!("nick: {}", cfg.node_name)));
+                    }
                     UiEvent::Quit => {
                         break;
                     }
@@ -119,6 +114,36 @@ pub async fn run_network(
 
     // cleanup
     accept_task.abort();
+}
+
+async fn spawn_connect_if_needed(
+    cfg: &Config,
+    connected_addrs: &Arc<Mutex<HashSet<String>>>,
+    out_tx: &broadcast::Sender<String>,
+    inbound_tx: &mpsc::UnboundedSender<(String, String)>,
+    addr: String,
+) {
+    if addr == cfg.announce_addr { return; }
+    let mut set = connected_addrs.lock();
+    if set.contains(&addr) { return; }
+    set.insert(addr.clone());
+    drop(set);
+    let out_tx_c = out_tx.clone();
+    let inbound_tx_c = inbound_tx.clone();
+    let connected_addrs_c = connected_addrs.clone();
+    tokio::spawn(async move {
+        match TcpStream::connect(&addr).await {
+            Ok(stream) => {
+                info!("connected to {addr}");
+                handle_connection(stream, out_tx_c, inbound_tx_c).await;
+            }
+            Err(e) => {
+                warn!("failed to connect to {addr}: {e}");
+            }
+        }
+        // on exit remove from set
+        connected_addrs_c.lock().remove(&addr);
+    });
 }
 
 pub(crate) fn dedupe_check_insert(

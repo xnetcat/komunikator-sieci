@@ -1,5 +1,6 @@
 use std::io::{self};
 use std::time::Duration;
+use std::fs;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -44,7 +45,7 @@ pub fn run_tui(mut net_rx: UnboundedReceiver<NetEvent>, ui_tx: UnboundedSender<U
                             let text = input.trim().to_string();
                             if !text.is_empty() {
                                 if text.starts_with('/') {
-                                    handle_command(&text, &ui_tx, &mut should_quit);
+                                    handle_command(&text, &ui_tx, &mut should_quit, &peers, &mut messages);
                                 } else {
                                     let _ = ui_tx.send(UiEvent::SendText(text));
                                 }
@@ -81,13 +82,54 @@ pub fn run_tui(mut net_rx: UnboundedReceiver<NetEvent>, ui_tx: UnboundedSender<U
     terminal.show_cursor().ok();
 }
 
-fn handle_command(cmd: &str, ui_tx: &UnboundedSender<UiEvent>, should_quit: &mut bool) {
+fn handle_command(
+    cmd: &str,
+    ui_tx: &UnboundedSender<UiEvent>,
+    should_quit: &mut bool,
+    peers: &Vec<PeerInfo>,
+    messages: &mut Vec<String>,
+) {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     match parts.get(0).copied().unwrap_or("") {
         "/quit" | "/q" => { *should_quit = true; let _ = ui_tx.send(UiEvent::Quit); }
         "/nick" if parts.len() >= 2 => {
             let new = parts[1].to_string();
             let _ = ui_tx.send(UiEvent::ChangeNick(new));
+        }
+        "/peers" => {
+            if peers.is_empty() {
+                messages.push("[peers] none".to_string());
+            } else {
+                for p in peers {
+                    messages.push(format!("[peers] {} {}", p.name, p.addr));
+                }
+            }
+        }
+        "/connect" if parts.len() >= 2 => {
+            let addr = parts[1].to_string();
+            messages.push(format!("[connect] trying {}", addr));
+            let _ = ui_tx.send(UiEvent::Connect(addr));
+        }
+        "/me" if parts.len() >= 2 => {
+            let action = parts[1..].join(" ");
+            let _ = ui_tx.send(UiEvent::Emote(action));
+        }
+        "/whoami" => {
+            let _ = ui_tx.send(UiEvent::QueryName);
+        }
+        "/clear" => {
+            messages.clear();
+        }
+        "/save" => {
+            let path = parts.get(1).cloned().unwrap_or("chatlog.txt");
+            let content = messages.join("\n");
+            match fs::write(path, content) {
+                Ok(_) => messages.push("[save] chat saved".to_string()),
+                Err(e) => messages.push(format!("[save] error: {e}")),
+            }
+        }
+        "/help" => {
+            messages.push("[help] /nick <name>, /peers, /connect <host:port>, /me <action>, /whoami, /clear, /save [file], /quit".to_string());
         }
         _ => {
             let _ = ui_tx.send(UiEvent::SendText(cmd.to_string()));
