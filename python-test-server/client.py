@@ -1,10 +1,26 @@
 import argparse
 import socket
+import threading
 
 
 def run_udp_client(host, port):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (host, port)
+    stop_event = threading.Event()
+
+    def receiver():
+        while not stop_event.is_set():
+            try:
+                data, _ = client_socket.recvfrom(4096)
+            except OSError:
+                break
+            except Exception:
+                continue
+            text = data.decode("utf-8", errors="replace")
+            print(f"\nOdebrano: {text}")
+
+    recv_thread = threading.Thread(target=receiver, daemon=True)
+    recv_thread.start()
     try:
         while True:
             try:
@@ -12,18 +28,22 @@ def run_udp_client(host, port):
                 if message == "exit":
                     client_socket.sendto(b"exit", server_address)
                     print("Koniec połączenia")
+                    stop_event.set()
                     break
                 client_socket.sendto(message.encode("utf-8"), server_address)
-                data, _ = client_socket.recvfrom(4096)
-                text = data.decode("utf-8", errors="replace")
-                print(f"Odpowiedź serwera: {text}")
             except KeyboardInterrupt:
                 print("Koniec programu")
+                stop_event.set()
                 break
             except Exception as e:
                 print(f"Błąd: {e}")
+                stop_event.set()
                 break
     finally:
+        try:
+            client_socket.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
         try:
             client_socket.close()
         except Exception:
@@ -34,6 +54,25 @@ def run_tcp_client(host, port):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_address = (host, port)
     client_socket.connect(server_address)
+    stop_event = threading.Event()
+
+    def receiver():
+        while not stop_event.is_set():
+            try:
+                data = client_socket.recv(4096)
+                if not data:
+                    print("Serwer się rozłączył")
+                    stop_event.set()
+                    break
+                text = data.decode("utf-8", errors="replace")
+                print(f"\nOdebrano: {text}")
+            except OSError:
+                break
+            except Exception:
+                continue
+
+    recv_thread = threading.Thread(target=receiver, daemon=True)
+    recv_thread.start()
     try:
         while True:
             try:
@@ -41,19 +80,16 @@ def run_tcp_client(host, port):
                 if message == "exit":
                     client_socket.sendall(b"exit")
                     print("Koniec połączenia")
+                    stop_event.set()
                     break
                 client_socket.sendall(message.encode("utf-8"))
-                data = client_socket.recv(4096)
-                if not data:
-                    print("Serwer się rozłączył")
-                    break
-                text = data.decode("utf-8", errors="replace")
-                print(f"Odpowiedź serwera: {text}")
             except KeyboardInterrupt:
                 print("Koniec programu")
+                stop_event.set()
                 break
             except Exception as e:
                 print(f"Błąd: {e}")
+                stop_event.set()
                 break
     finally:
         try:
