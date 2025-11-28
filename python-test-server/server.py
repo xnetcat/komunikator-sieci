@@ -120,18 +120,17 @@ def get_username_for_client(client):
 
 
 def set_username_for_client(client, username):
-    if not username or " " in username:
-        return False, "Niepoprawna nazwa użytkownika. Użyj bez spacji."
+    """Internal function to set username after successful login/register."""
     with clients_lock:
         if username in username_to_client and username_to_client[username] is not client:
-            return False, f"Nazwa '{username}' jest już zajęta."
+            return False, f"Użytkownik '{username}' jest już zalogowany."
         # Remove old mapping if any
         old = client_to_username.get(client)
         if old and old != username:
             username_to_client.pop(old, None)
         client_to_username[client] = username
         username_to_client[username] = client
-    return True, f"Ustawiono nazwę użytkownika na '{username}'."
+    return True, f"Zalogowano jako '{username}'."
 
 
 def remove_client(client):
@@ -144,6 +143,20 @@ def remove_client(client):
 def list_usernames():
     with clients_lock:
         return sorted(username_to_client.keys())
+
+
+def broadcast_message(sender_name, message, exclude_client=None, send_func=None):
+    """Broadcast a message to all connected users except the sender."""
+    with clients_lock:
+        for username, client in username_to_client.items():
+            if client == exclude_client:
+                continue
+            try:
+                text = f"[{sender_name}] {message}"
+                if send_func:
+                    send_func(client, text)
+            except Exception:
+                pass
 
 
 def handle_udp_packet(server_socket, data, client_address):
@@ -210,19 +223,12 @@ def handle_udp_packet(server_socket, data, client_address):
         print(f"[{client_address}] Wysłano: {msg}")
         return
 
-    if text.startswith("/set "):
-        _, _, username = text.partition(" ")
-        ok, msg = set_username_for_client(client_address, username.strip())
-        server_socket.sendto(msg.encode("utf-8"), client_address)
-        print(f"[{client_address}] Wysłano: {msg}")
-        return
-
     if text == "/whoami":
         username = get_username_for_client(client_address)
         msg = (
-            f"Twoja nazwa użytkownika: '{username}'"
+            f"Zalogowany jako: '{username}'"
             if username
-            else "Nie ustawiono nazwy użytkownika. Użyj: /set <nazwa> lub /login."
+            else "Niezalogowany. Użyj /login lub /register."
         )
         server_socket.sendto(msg.encode("utf-8"), client_address)
         print(f"[{client_address}] Wysłano: {msg}")
@@ -235,6 +241,21 @@ def handle_udp_packet(server_socket, data, client_address):
         print(f"[{client_address}] Wysłano: {msg}")
         return
 
+    if text == "/help":
+        msg = """Dostępne komendy:
+/register <użytkownik> <hasło> - Rejestracja nowego użytkownika
+/login <użytkownik> <hasło> - Logowanie
+/logout - Wylogowanie
+/whoami - Pokaż swoją nazwę użytkownika
+/list - Lista zalogowanych użytkowników
+/msg <użytkownik> <wiadomość> - Wyślij prywatną wiadomość
+/history <użytkownik> - Historia wiadomości z użytkownikiem
+/help - Ta pomoc
+(zwykła wiadomość) - Wyślij do wszystkich zalogowanych"""
+        server_socket.sendto(msg.encode("utf-8"), client_address)
+        print(f"[{client_address}] Wysłano: /help")
+        return
+
     if text.startswith("/history"):
         parts = text.split(" ", 1)
         if len(parts) < 2 or not parts[1].strip():
@@ -243,7 +264,7 @@ def handle_udp_packet(server_socket, data, client_address):
             target_user = parts[1].strip()
             me = get_username_for_client(client_address)
             if not me:
-                msg = "Najpierw ustaw nazwę użytkownika (/set) lub /login."
+                msg = "Musisz być zalogowany. Użyj /login lub /register."
             else:
                 rows = get_history(me, target_user, limit=50)
                 if not rows:
@@ -268,7 +289,7 @@ def handle_udp_packet(server_socket, data, client_address):
         _, target_user, msg_body = parts[0], parts[1].strip(), parts[2].strip()
         sender_name = get_username_for_client(client_address)
         if not sender_name:
-            msg = "Najpierw ustaw nazwę użytkownika (/set) lub /login."
+            msg = "Musisz być zalogowany. Użyj /login lub /register."
             server_socket.sendto(msg.encode("utf-8"), client_address)
             print(f"[{client_address}] Wysłano: {msg}")
             return
@@ -290,13 +311,21 @@ def handle_udp_packet(server_socket, data, client_address):
         store_message(sender_name, target_user, msg_body)
         return
 
-    # Fallback to ping/pong/echo
-    response = process_message(text)
-    if response is None:
-        print(f"[{client_address}] Zamknięcie żądane ('exit')")
+    # Check if user is logged in - broadcast to all users
+    sender_name = get_username_for_client(client_address)
+    if sender_name:
+        # Broadcast message to all connected users
+        def udp_send(client, msg):
+            server_socket.sendto(msg.encode("utf-8"), client)
+        
+        broadcast_message(sender_name, text, exclude_client=client_address, send_func=udp_send)
+        print(f"[{client_address}] Rozgłoszono: [{sender_name}] {text}")
         return
-    server_socket.sendto(response.encode("utf-8"), client_address)
-    print(f"[{client_address}] Wysłano: {response}")
+
+    # User not logged in - require login
+    msg = "Musisz być zalogowany aby wysyłać wiadomości. Użyj /login lub /register."
+    server_socket.sendto(msg.encode("utf-8"), client_address)
+    print(f"[{client_address}] Wysłano: {msg}")
 
 
 def run_udp_server(host, port):
@@ -392,19 +421,12 @@ def handle_tcp_client(conn, client_address):
                 print(f"[{client_address}] Wysłano: {msg}")
                 continue
 
-            if text.startswith("/set "):
-                _, _, username = text.partition(" ")
-                ok, msg = set_username_for_client(conn, username.strip())
-                conn.sendall(msg.encode("utf-8"))
-                print(f"[{client_address}] Wysłano: {msg}")
-                continue
-
             if text == "/whoami":
                 username = get_username_for_client(conn)
                 msg = (
-                    f"Twoja nazwa użytkownika: '{username}'"
+                    f"Zalogowany jako: '{username}'"
                     if username
-                    else "Nie ustawiono nazwy użytkownika. Użyj: /set <nazwa> lub /login."
+                    else "Niezalogowany. Użyj /login lub /register."
                 )
                 conn.sendall(msg.encode("utf-8"))
                 print(f"[{client_address}] Wysłano: {msg}")
@@ -417,6 +439,21 @@ def handle_tcp_client(conn, client_address):
                 print(f"[{client_address}] Wysłano: {msg}")
                 continue
 
+            if text == "/help":
+                msg = """Dostępne komendy:
+/register <użytkownik> <hasło> - Rejestracja nowego użytkownika
+/login <użytkownik> <hasło> - Logowanie
+/logout - Wylogowanie
+/whoami - Pokaż swoją nazwę użytkownika
+/list - Lista zalogowanych użytkowników
+/msg <użytkownik> <wiadomość> - Wyślij prywatną wiadomość
+/history <użytkownik> - Historia wiadomości z użytkownikiem
+/help - Ta pomoc
+(zwykła wiadomość) - Wyślij do wszystkich zalogowanych"""
+                conn.sendall(msg.encode("utf-8"))
+                print(f"[{client_address}] Wysłano: /help")
+                continue
+
             if text.startswith("/history"):
                 parts = text.split(" ", 1)
                 if len(parts) < 2 or not parts[1].strip():
@@ -425,7 +462,7 @@ def handle_tcp_client(conn, client_address):
                     target_user = parts[1].strip()
                     me = get_username_for_client(conn)
                     if not me:
-                        msg = "Najpierw ustaw nazwę użytkownika (/set) lub /login."
+                        msg = "Musisz być zalogowany. Użyj /login lub /register."
                     else:
                         rows = get_history(me, target_user, limit=50)
                         if not rows:
@@ -450,7 +487,7 @@ def handle_tcp_client(conn, client_address):
                 _, target_user, msg_body = parts[0], parts[1].strip(), parts[2].strip()
                 sender_name = get_username_for_client(conn)
                 if not sender_name:
-                    msg = "Najpierw ustaw nazwę użytkownika (/set) lub /login."
+                    msg = "Musisz być zalogowany. Użyj /login lub /register."
                     conn.sendall(msg.encode("utf-8"))
                     print(f"[{client_address}] Wysłano: {msg}")
                     continue
@@ -478,14 +515,24 @@ def handle_tcp_client(conn, client_address):
                 store_message(sender_name, target_user, msg_body)
                 continue
 
-            # Fallback do ping/pong/echo
-            response = process_message(text)
-            if response is None:
-                print(f"[{client_address}] Zamknięcie żądane ('exit')")
-                break
+            # Check if user is logged in - broadcast to all users
+            sender_name = get_username_for_client(conn)
+            if sender_name:
+                # Broadcast message to all connected users
+                def tcp_send(client, msg):
+                    try:
+                        client.sendall(msg.encode("utf-8"))
+                    except Exception:
+                        pass
+                
+                broadcast_message(sender_name, text, exclude_client=conn, send_func=tcp_send)
+                print(f"[{client_address}] Rozgłoszono: [{sender_name}] {text}")
+                continue
 
-            conn.sendall(response.encode("utf-8"))
-            print(f"[{client_address}] Wysłano: {response}")
+            # User not logged in - require login
+            msg = "Musisz być zalogowany aby wysyłać wiadomości. Użyj /login lub /register."
+            conn.sendall(msg.encode("utf-8"))
+            print(f"[{client_address}] Wysłano: {msg}")
     except Exception as e:
         print(f"[{client_address}] Błąd: {e}")
     finally:
