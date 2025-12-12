@@ -1,4 +1,6 @@
 import argparse
+import base64
+import os
 import queue
 import readline  # enables line editing in input
 import socket
@@ -6,6 +8,11 @@ import sys
 import threading
 
 PROMPT = "> "
+
+MAX_FILE_SIZE = 10 * 1024 * 1024
+FILE_HEADER_PREFIX = "FILE_TRANSFER:"
+FILE_END_MARKER = "FILE_END"
+DOWNLOADS_DIR = "downloads"
 
 WELCOME_MESSAGE = """
 ╔════════════════════════════════════════════════════════════╗
@@ -19,6 +26,7 @@ WELCOME_MESSAGE = """
 ║  /whoami                         - Pokaż swoją nazwę       ║
 ║  /list                           - Lista użytkowników      ║
 ║  /msg <użytkownik> <wiadomość>   - Prywatna wiadomość      ║
+║  /sendfile <użytkownik> <ścieżka> - Wyślij plik (TCP, 10MB) ║
 ║  /history <użytkownik>           - Historia wiadomości     ║
 ║  /help                           - Pokaż pomoc             ║
 ║  exit                            - Zakończ program         ║
@@ -48,14 +56,13 @@ def run_udp_client(host, port):
             msg_queue.put(text)
 
     def printer():
-        """Print incoming messages, refreshing the input line."""
         while not stop_event.is_set():
             try:
                 text = msg_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            # Save current input, clear line, print message, restore input
-            sys.stdout.write("\r\033[K")  # Clear current line
+
+            sys.stdout.write("\r\033[K")
             sys.stdout.write(f"Odebrano: {text}\n")
             sys.stdout.write(PROMPT + readline.get_line_buffer())
             sys.stdout.flush()
@@ -88,14 +95,7 @@ def run_udp_client(host, port):
                 stop_event.set()
                 break
     finally:
-        try:
-            client_socket.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
-        try:
-            client_socket.close()
-        except Exception:
-            pass
+        client_socket.close()
 
 
 def run_tcp_client(host, port):
@@ -104,35 +104,140 @@ def run_tcp_client(host, port):
     client_socket.connect(server_address)
     stop_event = threading.Event()
     msg_queue = queue.Queue()
+    
+    pending_file_transfer = {"active": False, "target": None, "path": None}
+    pending_file_lock = threading.Lock()
 
     def receiver():
+        buffer = ""
         while not stop_event.is_set():
             try:
-                data = client_socket.recv(4096)
+                data = client_socket.recv(8192)
                 if not data:
-                    msg_queue.put(None)  # Signal disconnect
+                    msg_queue.put(("disconnect", None))
                     stop_event.set()
                     break
                 text = data.decode("utf-8", errors="replace")
-                msg_queue.put(text)
+                buffer += text
+                
+
+                if buffer == "FILE_READY":
+                    msg_queue.put(("file_ready", None))
+                    buffer = ""
+                    continue
+                
+                if buffer == "FILE_DATA_READY":
+                    msg_queue.put(("file_data_ready", None))
+                    buffer = ""
+                    continue
+                
+
+                if buffer.startswith(FILE_HEADER_PREFIX) and FILE_END_MARKER in buffer:
+
+                    end_idx = buffer.find(FILE_END_MARKER)
+                    file_msg = buffer[:end_idx + len(FILE_END_MARKER)]
+                    buffer = buffer[end_idx + len(FILE_END_MARKER):]
+                    
+                    try:
+                        lines = file_msg.split("\n")
+                        header = lines[0][len(FILE_HEADER_PREFIX):]
+                        parts = header.split("|")
+                        filename = parts[0]
+                        file_size = int(parts[1])
+                        sender = parts[2]
+                        encoded_data = lines[1]
+                        
+                        file_data = base64.b64decode(encoded_data)
+                        msg_queue.put(("file_incoming", (filename, file_size, sender, file_data)))
+                    except Exception as e:
+                        msg_queue.put(("message", f"Błąd odbierania pliku: {e}"))
+                    continue
+                
+
+                if "\n" in buffer or len(buffer) > 4096:
+                    msg_queue.put(("message", buffer))
+                    buffer = ""
+                elif not buffer.startswith(FILE_HEADER_PREFIX):
+                    msg_queue.put(("message", buffer))
+                    buffer = ""
+                    
             except OSError:
                 break
             except Exception:
                 continue
 
     def printer():
-        """Print incoming messages, refreshing the input line."""
+        os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+        
         while not stop_event.is_set():
             try:
-                text = msg_queue.get(timeout=0.1)
+                msg_type, data = msg_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            sys.stdout.write("\r\033[K")  # Clear current line
-            if text is None:
+            
+            sys.stdout.write("\r\033[K")
+            
+            if msg_type == "disconnect":
                 sys.stdout.write("Serwer się rozłączył\n")
-            else:
-                sys.stdout.write(f"Odebrano: {text}\n")
-                sys.stdout.write(PROMPT + readline.get_line_buffer())
+            elif msg_type == "file_ready":
+                with pending_file_lock:
+                    if pending_file_transfer["active"]:
+                        try:
+                            filepath = pending_file_transfer["path"]
+                            target = pending_file_transfer["target"]
+                            filename = os.path.basename(filepath)
+                            
+                            with open(filepath, "rb") as f:
+                                file_data = f.read()
+                            
+                            file_size = len(file_data)
+                            
+                            if file_size > MAX_FILE_SIZE:
+                                sys.stdout.write(f"Plik za duży ({file_size} > {MAX_FILE_SIZE})\n")
+                            else:
+
+                                header = f"{FILE_HEADER_PREFIX}{filename}|{file_size}|{target}"
+                                client_socket.sendall(header.encode("utf-8"))
+                                sys.stdout.write(f"Wysyłam plik '{filename}' ({file_size} bajtów)...\n")
+                        except FileNotFoundError:
+                            sys.stdout.write(f"Plik nie istnieje: {filepath}\n")
+                        except Exception as e:
+                            sys.stdout.write(f"Błąd wysyłania pliku: {e}\n")
+                        finally:
+                            pending_file_transfer["active"] = False
+                            pending_file_transfer["target"] = None
+                            pending_file_transfer["path"] = None
+            elif msg_type == "file_data_ready":
+                with pending_file_lock:
+                    if pending_file_transfer["path"]:
+                        try:
+                            filepath = pending_file_transfer["path"]
+                            with open(filepath, "rb") as f:
+                                file_data = f.read()
+                            client_socket.sendall(file_data)
+                        except Exception as e:
+                            sys.stdout.write(f"Błąd wysyłania danych pliku: {e}\n")
+            elif msg_type == "file_incoming":
+                filename, file_size, sender, file_data = data
+
+                save_path = os.path.join(DOWNLOADS_DIR, filename)
+
+                counter = 1
+                base, ext = os.path.splitext(filename)
+                while os.path.exists(save_path):
+                    save_path = os.path.join(DOWNLOADS_DIR, f"{base}_{counter}{ext}")
+                    counter += 1
+                
+                try:
+                    with open(save_path, "wb") as f:
+                        f.write(file_data)
+                    sys.stdout.write(f"📁 Otrzymano plik od '{sender}': {os.path.basename(save_path)} ({file_size} bajtów)\n")
+                except Exception as e:
+                    sys.stdout.write(f"Błąd zapisywania pliku: {e}\n")
+            elif msg_type == "message":
+                sys.stdout.write(f"Odebrano: {data}\n")
+            
+            sys.stdout.write(PROMPT + readline.get_line_buffer())
             sys.stdout.flush()
 
     recv_thread = threading.Thread(target=receiver, daemon=True)
@@ -153,6 +258,36 @@ def run_tcp_client(host, port):
                     print("Koniec połączenia")
                     stop_event.set()
                     break
+                
+                # Handle /sendfile command locally
+                if message.startswith("/sendfile "):
+                    parts = message.split(" ", 2)
+                    if len(parts) < 3:
+                        print("Użycie: /sendfile <użytkownik> <ścieżka>")
+                        continue
+                    target_user = parts[1].strip()
+                    filepath = parts[2].strip()
+                    
+
+                    if not os.path.isfile(filepath):
+                        print(f"Plik nie istnieje: {filepath}")
+                        continue
+                    
+                    file_size = os.path.getsize(filepath)
+                    if file_size > MAX_FILE_SIZE:
+                        print(f"Plik za duży: {file_size} bajtów (max {MAX_FILE_SIZE // (1024*1024)} MB)")
+                        continue
+                    
+
+                    with pending_file_lock:
+                        pending_file_transfer["active"] = True
+                        pending_file_transfer["target"] = target_user
+                        pending_file_transfer["path"] = filepath
+                    
+
+                    client_socket.sendall(message.encode("utf-8"))
+                    continue
+                
                 client_socket.sendall(message.encode("utf-8"))
             except KeyboardInterrupt:
                 print("\nKoniec programu")
@@ -163,14 +298,7 @@ def run_tcp_client(host, port):
                 stop_event.set()
                 break
     finally:
-        try:
-            client_socket.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
-        try:
-            client_socket.close()
-        except Exception:
-            pass
+        client_socket.close()
 
 
 def main():
