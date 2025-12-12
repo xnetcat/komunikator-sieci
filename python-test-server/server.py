@@ -37,14 +37,19 @@ import threading
 import sqlite3
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from typing import Callable
+
+# Typy dla identyfikatorów klientów
+# UDP: krotka (IP, port), TCP: obiekt socket
+ClientHandle = socket.socket | tuple[str, int]
 
 # Stałe protokołu przesyłania plików (tylko TCP)
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB - limit wielkości pliku
-FILE_HEADER_PREFIX = "FILE_TRANSFER:"  # Prefix nagłówka: FILE_TRANSFER:nazwa|rozmiar|odbiorca
-FILE_END_MARKER = "FILE_END"  # Znacznik końca danych pliku
+MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10 MB - limit wielkości pliku
+FILE_HEADER_PREFIX: str = "FILE_TRANSFER:"  # Prefix nagłówka: FILE_TRANSFER:nazwa|rozmiar|odbiorca
+FILE_END_MARKER: str = "FILE_END"  # Znacznik końca danych pliku
 
 
-def process_message(text):
+def process_message(text: str) -> str | None:
     if text == "exit":
         return None
     if text == "ping":
@@ -67,17 +72,17 @@ def process_message(text):
 # username_to_client: nazwa użytkownika -> uchwyt klienta
 #   - Odwrotne mapowanie do wyszukiwania po nazwie (np. dla /msg)
 # =============================================================================
-clients_lock = threading.Lock()  # Blokada do synchronizacji (wiele wątków)
-client_to_username = {}  # uchwyt klienta -> nazwa użytkownika
-username_to_client = {}  # nazwa użytkownika -> uchwyt klienta
+clients_lock: threading.Lock = threading.Lock()  # Blokada do synchronizacji (wiele wątków)
+client_to_username: dict[ClientHandle, str] = {}  # uchwyt klienta -> nazwa użytkownika
+username_to_client: dict[str, ClientHandle] = {}  # nazwa użytkownika -> uchwyt klienta
 
 # Baza danych SQLite - przechowuje dane użytkowników i historię wiadomości
-DB_PATH = "users.sqlite3"
-db_lock = threading.Lock()
-db_conn = None
+DB_PATH: str = "users.sqlite3"
+db_lock: threading.Lock = threading.Lock()
+db_conn: sqlite3.Connection | None = None
 
 
-def init_db(path=DB_PATH):
+def init_db(path: str = DB_PATH) -> None:
     global db_conn
     db_conn = sqlite3.connect(path, check_same_thread=False)
     with db_conn:
@@ -106,7 +111,7 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-def register_user(username: str, password: str):
+def register_user(username: str, password: str) -> tuple[bool, str]:
     if not username or " " in username:
         return False, "Niepoprawna nazwa użytkownika. Użyj bez spacji."
     if not password:
@@ -115,8 +120,8 @@ def register_user(username: str, password: str):
     pw_hash = hash_password(password)
     with db_lock:
         try:
-            with db_conn:
-                db_conn.execute(
+            with db_conn:  # type: ignore
+                db_conn.execute(  # type: ignore
                     "INSERT INTO users (username, password) VALUES (?, ?)",
                     (username, pw_hash),
                 )
@@ -128,7 +133,7 @@ def register_user(username: str, password: str):
 def verify_user(username: str, password: str) -> bool:
     pw_hash = hash_password(password)
     with db_lock:
-        cur = db_conn.cursor()
+        cur = db_conn.cursor()  # type: ignore
         cur.execute("SELECT password FROM users WHERE username = ?", (username,))
         row = cur.fetchone()
     if not row:
@@ -136,18 +141,18 @@ def verify_user(username: str, password: str) -> bool:
     return row[0] == pw_hash
 
 
-def store_message(sender: str, receiver: str, body: str):
+def store_message(sender: str, receiver: str, body: str) -> None:
     with db_lock:
-        with db_conn:
-            db_conn.execute(
+        with db_conn:  # type: ignore
+            db_conn.execute(  # type: ignore
                 "INSERT INTO messages (sender, receiver, body) VALUES (?, ?, ?)",
                 (sender, receiver, body),
             )
 
 
-def get_history(user1: str, user2: str, limit: int = 50):
+def get_history(user1: str, user2: str, limit: int = 50) -> list[tuple[str, str, str, str]]:
     with db_lock:
-        cur = db_conn.cursor()
+        cur = db_conn.cursor()  # type: ignore
         cur.execute(
             """
             SELECT sender, receiver, body, created_at
@@ -162,12 +167,12 @@ def get_history(user1: str, user2: str, limit: int = 50):
     return list(reversed(rows))
 
 
-def get_username_for_client(client):
+def get_username_for_client(client: ClientHandle) -> str | None:
     with clients_lock:
         return client_to_username.get(client)
 
 
-def set_username_for_client(client, username):
+def set_username_for_client(client: ClientHandle, username: str) -> tuple[bool, str]:
     with clients_lock:
         if username in username_to_client and username_to_client[username] is not client:
             return False, f"Użytkownik '{username}' jest już zalogowany."
@@ -179,14 +184,14 @@ def set_username_for_client(client, username):
     return True, f"Zalogowano jako '{username}'."
 
 
-def remove_client(client):
+def remove_client(client: ClientHandle) -> None:
     with clients_lock:
         old = client_to_username.pop(client, None)
         if old:
             username_to_client.pop(old, None)
 
 
-def list_usernames():
+def list_usernames() -> list[str]:
     with clients_lock:
         return sorted(username_to_client.keys())
 
@@ -198,7 +203,12 @@ def list_usernames():
 # Iteruje przez wszystkich zalogowanych użytkowników i wysyła wiadomość.
 # send_func to funkcja protokołowa (inna dla UDP, inna dla TCP).
 # =============================================================================
-def broadcast_message(sender_name, message, exclude_client=None, send_func=None):
+def broadcast_message(
+    sender_name: str,
+    message: str,
+    exclude_client: ClientHandle | None = None,
+    send_func: Callable[[ClientHandle, str], None] | None = None
+) -> None:
     with clients_lock:
         for username, client in username_to_client.items():
             if client == exclude_client:
@@ -218,7 +228,11 @@ def broadcast_message(sender_name, message, exclude_client=None, send_func=None)
 # Identyfikacja klienta: krotka (IP, port) otrzymana z recvfrom().
 # Odpowiedzi wysyłane przez sendto(dane, adres_klienta).
 # =============================================================================
-def handle_udp_packet(server_socket, data, client_address):
+def handle_udp_packet(
+    server_socket: socket.socket,
+    data: bytes,
+    client_address: tuple[str, int]
+) -> None:
     # Dekodowanie otrzymanych bajtów na tekst
     try:
         text = data.decode("utf-8", errors="replace").strip()
@@ -399,8 +413,9 @@ def handle_udp_packet(server_socket, data, client_address):
     sender_name = get_username_for_client(client_address)
     if sender_name:
         # Funkcja wysyłająca przez UDP - podajemy adres docelowy
-        def udp_send(client, msg):
-            server_socket.sendto(msg.encode("utf-8"), client)
+        def udp_send(client: ClientHandle, msg: str) -> None:
+            if isinstance(client, tuple):
+                server_socket.sendto(msg.encode("utf-8"), client)
         
         broadcast_message(sender_name, text, exclude_client=client_address, send_func=udp_send)
         print(f"[{client_address}] Rozgłoszono: [{sender_name}] {text}")
@@ -419,13 +434,14 @@ def handle_udp_packet(server_socket, data, client_address):
 # Adres nadawcy (krotka IP, port) służy do identyfikacji klienta.
 # ThreadPoolExecutor - obsługuje każdy pakiet w osobnym wątku.
 # =============================================================================
-def run_udp_server(host, port):
+def run_udp_server(host: str, port: int) -> None:
     # Tworzenie gniazda UDP (SOCK_DGRAM = datagramy)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (host, port)
     server_socket.bind(server_address)  # Przypisanie adresu do gniazda
     print(f"UDP serwer nasłuchuje na {server_address}")
 
+    executor: ThreadPoolExecutor | None = None
     try:
         executor = ThreadPoolExecutor(max_workers=32)  # Pula wątków do obsługi
         while True:
@@ -436,7 +452,8 @@ def run_udp_server(host, port):
     except KeyboardInterrupt:
         print("Koniec programu (zamykam serwer)")
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
         server_socket.close()
 
 
@@ -449,7 +466,7 @@ def run_udp_server(host, port):
 # sendall() - gwarantuje wysłanie wszystkich bajtów.
 # Puste dane z recv() oznaczają rozłączenie klienta.
 # =============================================================================
-def handle_tcp_client(conn, client_address):
+def handle_tcp_client(conn: socket.socket, client_address: tuple[str, int]) -> None:
     print(f"Połączono z {client_address}")
     try:
         while True:
@@ -460,7 +477,7 @@ def handle_tcp_client(conn, client_address):
                 print(f"[{client_address}] Klient się rozłączył")
                 break
 
-            text = data.decode("utf-8", errors="replace").strip()
+            text: str = data.decode("utf-8", errors="replace").strip()
             print(f"[{client_address}] Otrzymane: {text}")
 
 
@@ -744,11 +761,12 @@ def handle_tcp_client(conn, client_address):
             sender_name = get_username_for_client(conn)
             if sender_name:
                 # Funkcja wysyłająca przez TCP - używa dedykowanego gniazda
-                def tcp_send(client, msg):
-                    try:
-                        client.sendall(msg.encode("utf-8"))
-                    except Exception:
-                        pass  # Ignorujemy błędy (klient mógł się rozłączyć)
+                def tcp_send(client: ClientHandle, msg: str) -> None:
+                    if isinstance(client, socket.socket):
+                        try:
+                            client.sendall(msg.encode("utf-8"))
+                        except Exception:
+                            pass  # Ignorujemy błędy (klient mógł się rozłączyć)
                 
                 broadcast_message(sender_name, text, exclude_client=conn, send_func=tcp_send)
                 print(f"[{client_address}] Rozgłoszono: [{sender_name}] {text}")
@@ -774,7 +792,7 @@ def handle_tcp_client(conn, client_address):
 # Każdy klient otrzymuje dedykowane gniazdo - to jest jego identyfikator.
 # Dla każdego klienta tworzony jest osobny wątek obsługi.
 # =============================================================================
-def run_tcp_server(host, port):
+def run_tcp_server(host: str, port: int) -> None:
     # Tworzenie gniazda TCP (SOCK_STREAM = strumień)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # Pozwala na ponowne użycie portu po zamknięciu serwera
@@ -798,11 +816,11 @@ def run_tcp_server(host, port):
         server_socket.close()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Prosty serwer UDP/TCP: ping/pong/echo + logowanie")
-    parser.add_argument("--proto", choices=["udp", "tcp"], default="udp", help="Wybierz protokół serwera")
-    parser.add_argument("--host", default="localhost", help="Adres hosta (domyślnie: localhost)")
-    parser.add_argument("--port", type=int, default=5678, help="Port serwera (domyślnie: 5678)")
+    _ = parser.add_argument("--proto", choices=["udp", "tcp"], default="udp", help="Wybierz protokół serwera")
+    _ = parser.add_argument("--host", default="localhost", help="Adres hosta (domyślnie: localhost)")
+    _ = parser.add_argument("--port", type=int, default=5678, help="Port serwera (domyślnie: 5678)")
     args = parser.parse_args()
 
     init_db()

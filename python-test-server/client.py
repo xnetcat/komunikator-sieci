@@ -36,14 +36,15 @@ import readline  # włącza edycję linii w input()
 import socket
 import sys
 import threading
+from typing import Any
 
-PROMPT = "> "
+PROMPT: str = "> "
 
 # Stałe protokołu przesyłania plików (muszą być zgodne z serwerem)
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB - limit wielkości pliku
-FILE_HEADER_PREFIX = "FILE_TRANSFER:"  # Prefix nagłówka pliku
-FILE_END_MARKER = "FILE_END"  # Znacznik końca danych pliku
-DOWNLOADS_DIR = "downloads"  # Katalog na pobrane pliki
+MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10 MB - limit wielkości pliku
+FILE_HEADER_PREFIX: str = "FILE_TRANSFER:"  # Prefix nagłówka pliku
+FILE_END_MARKER: str = "FILE_END"  # Znacznik końca danych pliku
+DOWNLOADS_DIR: str = "downloads"  # Katalog na pobrane pliki
 
 WELCOME_MESSAGE = """
 ╔════════════════════════════════════════════════════════════╗
@@ -77,7 +78,7 @@ WELCOME_MESSAGE = """
 # recvfrom(4096) - odbiera datagram (max 4KB), zwraca (dane, adres)
 # Klient NIE przechowuje żadnego stanu - każde żądanie trafia do serwera.
 # =============================================================================
-def run_udp_client(host, port):
+def run_udp_client(host: str, port: int) -> None:
     # Tworzenie gniazda UDP (SOCK_DGRAM = datagramy)
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (host, port)
@@ -90,7 +91,7 @@ def run_udp_client(host, port):
     # Serwer może wysłać dane w dowolnym momencie (np. broadcast od innych
     # użytkowników). Wątek ciągle odbiera i dodaje do kolejki.
     # =========================================================================
-    def receiver():
+    def receiver() -> None:
         while not stop_event.is_set():
             try:
                 # recvfrom() - odbiera datagram + adres nadawcy
@@ -102,7 +103,7 @@ def run_udp_client(host, port):
             text = data.decode("utf-8", errors="replace")
             msg_queue.put(text)  # Dodaje do kolejki do wyświetlenia
 
-    def printer():
+    def printer() -> None:
         while not stop_event.is_set():
             try:
                 text = msg_queue.get(timeout=0.1)
@@ -156,7 +157,7 @@ def run_udp_client(host, port):
 # recv() odbiera dane strumieniem (mogą przychodzić w częściach).
 # Puste dane z recv() oznaczają rozłączenie serwera.
 # =============================================================================
-def run_tcp_client(host, port):
+def run_tcp_client(host: str, port: int) -> None:
     # Tworzenie gniazda TCP (SOCK_STREAM = strumień)
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_address = (host, port)
@@ -166,7 +167,7 @@ def run_tcp_client(host, port):
     msg_queue = queue.Queue()
     
     # Stan oczekującego transferu pliku (tylko TCP obsługuje pliki)
-    pending_file_transfer = {"active": False, "target": None, "path": None}
+    pending_file_transfer: dict[str, bool | str | None] = {"active": False, "target": None, "path": None}
     pending_file_lock = threading.Lock()
 
     # =========================================================================
@@ -177,8 +178,8 @@ def run_tcp_client(host, port):
     # Wiele wiadomości może przyjść w jednym recv().
     # Dlatego używamy bufora do składania kompletnych wiadomości.
     # =========================================================================
-    def receiver():
-        buffer = ""  # Bufor do składania wiadomości ze strumienia
+    def receiver() -> None:
+        buffer: str = ""  # Bufor do składania wiadomości ze strumienia
         while not stop_event.is_set():
             try:
                 # recv() - odbiera dane ze strumienia TCP
@@ -249,7 +250,7 @@ def run_tcp_client(host, port):
             except Exception:
                 continue
 
-    def printer():
+    def printer() -> None:
         os.makedirs(DOWNLOADS_DIR, exist_ok=True)
         
         while not stop_event.is_set():
@@ -272,9 +273,9 @@ def run_tcp_client(host, port):
                 with pending_file_lock:
                     if pending_file_transfer["active"]:
                         try:
-                            filepath = pending_file_transfer["path"]
-                            target = pending_file_transfer["target"]
-                            filename = os.path.basename(filepath)
+                            filepath: str | None = pending_file_transfer["path"]  # type: ignore
+                            target: str | None = pending_file_transfer["target"]  # type: ignore
+                            filename: str = os.path.basename(filepath) if filepath else ""
                             
                             with open(filepath, "rb") as f:
                                 file_data = f.read()
@@ -406,11 +407,11 @@ def run_tcp_client(host, port):
         client_socket.close()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Prosty klient UDP/TCP")
-    parser.add_argument("--proto", choices=["udp", "tcp"], default="udp", help="Wybierz protokół klienta")
-    parser.add_argument("--host", default="localhost", help="Host serwera (domyślnie: localhost)")
-    parser.add_argument("--port", type=int, default=5678, help="Port serwera (domyślnie: 5678)")
+    _ = parser.add_argument("--proto", choices=["udp", "tcp"], default="udp", help="Wybierz protokół klienta")
+    _ = parser.add_argument("--host", default="localhost", help="Host serwera (domyślnie: localhost)")
+    _ = parser.add_argument("--port", type=int, default=5678, help="Port serwera (domyślnie: 5678)")
     args = parser.parse_args()
 
     if args.proto == "udp":
