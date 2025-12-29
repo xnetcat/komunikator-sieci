@@ -1,0 +1,5 @@
+# Requirements for MD5 collision GPU demo
+# Install with: pip install -r requirements-md5.txt
+
+numpy>=1.24.0
+mlx>=0.4.0  # Apple Silicon GPU acceleration (Metal)
