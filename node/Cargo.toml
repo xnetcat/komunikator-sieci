@@ -15,7 +15,7 @@ ratatui = { version = "0.26", default-features = false, features = ["crossterm"]
 crossterm = "0.27"
 parking_lot = "0.12"
 thiserror = "1.0"
-bytes = "1.6"
+bytes = "1.11"
 anyhow = "1.0"
 urlencoding = "2.1"
 chrono = { version = "0.4", features = ["serde"] }
